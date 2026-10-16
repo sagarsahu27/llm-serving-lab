@@ -1,0 +1,24 @@
+[project]
+name = "llm-serving-lab"
+version = "0.1.0"
+description = "Unified OpenAI-compatible gateway + benchmarks for vLLM, SGLang, TGI and Ollama"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = [".venv", "results"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "ASYNC"]
+ignore = ["B008"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["llm_gateway", "bench"]
+
+[tool.pytest.ini_options]
+testpaths = ["gateway/tests", "bench/tests"]
+pythonpath = ["gateway", "."]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

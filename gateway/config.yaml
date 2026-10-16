@@ -1,0 +1,49 @@
+# Gateway routing configuration.
+#
+# Public model names are "<backend>/<alias>" (e.g. "vllm/qwen2.5-1.5b").
+# "auto/<alias>" or a bare "<alias>" routes to any healthy backend serving that alias,
+# trying backends in routing.fallback_order.
+#
+# ${VAR:-default} placeholders are expanded from the environment at startup
+# (see compose/.env.example).
+
+routing:
+  # When true, a pinned request (vllm/...) that fails with a connection error, timeout
+  # or 5xx is retried on the next backend serving the same alias.
+  fallback_on_error: ${GATEWAY_FALLBACK_ON_ERROR:-false}
+  fallback_order: [vllm, sglang, tgi, ollama]
+
+timeouts:
+  connect_s: ${GATEWAY_CONNECT_TIMEOUT_S:-5}
+  read_s: ${GATEWAY_READ_TIMEOUT_S:-300}
+
+health:
+  interval_s: ${GATEWAY_HEALTH_INTERVAL_S:-10}
+  timeout_s: 3
+
+backends:
+  vllm:
+    base_url: ${VLLM_URL:-http://vllm:8000}
+    health_path: /health
+    models:
+      "${MODEL_ALIAS:-qwen2.5-1.5b}": "${MODEL_ID:-Qwen/Qwen2.5-1.5B-Instruct}"
+
+  sglang:
+    base_url: ${SGLANG_URL:-http://sglang:30000}
+    health_path: /health
+    models:
+      "${MODEL_ALIAS:-qwen2.5-1.5b}": "${MODEL_ID:-Qwen/Qwen2.5-1.5B-Instruct}"
+
+  tgi:
+    base_url: ${TGI_URL:-http://tgi:80}
+    health_path: /health
+    models:
+      # TGI serves exactly one model and ignores the "model" field; "tgi" is conventional.
+      "${MODEL_ALIAS:-qwen2.5-1.5b}": tgi
+
+  ollama:
+    base_url: ${OLLAMA_URL:-http://ollama:11434}
+    health_path: /api/version
+    models:
+      # GGUF build of the same base model (quantized) - not apples-to-apples with the others.
+      "${MODEL_ALIAS:-qwen2.5-1.5b}": "${OLLAMA_MODEL:-qwen2.5:1.5b}"
