@@ -1,0 +1,20 @@
+#cloud-config
+# Template rendered by infra/main.bicep (placeholders __LIKE_THIS__ are replaced there).
+# Installs the NVIDIA driver, Docker and the NVIDIA Container Toolkit via
+# scripts/bootstrap_vm.sh, then reboots once so the driver is loaded.
+# Progress: ssh in and run  tail -f /var/log/llm-serving-lab-bootstrap.log
+write_files:
+  - path: /opt/llm-serving-lab/bootstrap_vm.sh
+    permissions: "0755"
+    encoding: b64
+    content: __BOOTSTRAP_B64__
+
+runcmd:
+  - sed -i 's/\r$//' /opt/llm-serving-lab/bootstrap_vm.sh
+  - [bash, -c, "REPO_URL='__REPO_URL__' /opt/llm-serving-lab/bootstrap_vm.sh '__ADMIN_USER__' >>/var/log/llm-serving-lab-bootstrap.log 2>&1"]
+
+power_state:
+  mode: reboot
+  message: Rebooting to load the NVIDIA driver
+  timeout: 60
+  condition: true

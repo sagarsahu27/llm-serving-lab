@@ -1,0 +1,6 @@
+-r gateway/requirements.txt
+-r bench/requirements.txt
+pytest>=8.2,<9.0
+pytest-asyncio>=0.24,<1.0
+respx>=0.21,<1.0
+ruff>=0.6
