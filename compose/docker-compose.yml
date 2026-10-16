@@ -1,0 +1,154 @@
+# LLM serving lab: gateway + vLLM / SGLang / TGI / Ollama on one NVIDIA GPU.
+#
+# Usage (from repo root; see Makefile / docs/runbook.md):
+#   cp compose/.env.example compose/.env
+#   docker compose -f compose/docker-compose.yml --env-file compose/.env --profile vllm up -d --wait
+#
+# Profiles: vllm | sglang | tgi | ollama | all
+# The gateway has no profile, so it always starts and routes to whichever backends are up.
+# Host ports are bound to 127.0.0.1 only - reach them through an SSH tunnel.
+
+name: llm-serving-lab
+
+x-gpu: &gpu
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: all
+            capabilities: [gpu]
+
+services:
+  gateway:
+    build: ../gateway
+    image: llm-serving-lab/gateway:local
+    ports:
+      - "127.0.0.1:${GATEWAY_PORT:-8000}:8000"
+    environment:
+      MODEL_ID: ${MODEL_ID:-Qwen/Qwen2.5-1.5B-Instruct}
+      MODEL_ALIAS: ${MODEL_ALIAS:-qwen2.5-1.5b}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:1.5b}
+      GATEWAY_FALLBACK_ON_ERROR: ${GATEWAY_FALLBACK_ON_ERROR:-false}
+      GATEWAY_READ_TIMEOUT_S: ${GATEWAY_READ_TIMEOUT_S:-300}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    restart: unless-stopped
+
+  vllm:
+    <<: *gpu
+    profiles: [vllm, all]
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:latest}
+    ipc: host
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+    volumes:
+      - hf-cache:/root/.cache/huggingface
+    ports:
+      - "127.0.0.1:8001:8000"
+    command: >-
+      --model ${MODEL_ID:-Qwen/Qwen2.5-1.5B-Instruct}
+      --host 0.0.0.0 --port 8000
+      --dtype ${DTYPE:-float16}
+      --max-model-len ${MAX_MODEL_LEN:-4096}
+      --gpu-memory-utilization ${VLLM_GPU_MEMORY_UTILIZATION:-0.90}
+      ${VLLM_EXTRA_ARGS:-}
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8000 && printf 'GET /health HTTP/1.0\\r\\n\\r\\n' >&3 && head -n1 <&3 | grep -q ' 200 '"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15m
+    restart: unless-stopped
+
+  sglang:
+    <<: *gpu
+    profiles: [sglang, all]
+    image: ${SGLANG_IMAGE:-lmsysorg/sglang:latest}
+    ipc: host
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+    volumes:
+      - hf-cache:/root/.cache/huggingface
+    ports:
+      - "127.0.0.1:8002:30000"
+    command: >-
+      python3 -m sglang.launch_server
+      --model-path ${MODEL_ID:-Qwen/Qwen2.5-1.5B-Instruct}
+      --host 0.0.0.0 --port 30000
+      --dtype ${DTYPE:-float16}
+      --context-length ${MAX_MODEL_LEN:-4096}
+      --mem-fraction-static ${SGLANG_MEM_FRACTION_STATIC:-0.85}
+      ${SGLANG_EXTRA_ARGS:-}
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/30000 && printf 'GET /health HTTP/1.0\\r\\n\\r\\n' >&3 && head -n1 <&3 | grep -q ' 200 '"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15m
+    restart: unless-stopped
+
+  tgi:
+    <<: *gpu
+    profiles: [tgi, all]
+    image: ${TGI_IMAGE:-ghcr.io/huggingface/text-generation-inference:3.3.5}
+    shm_size: 1g
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+      # Share the same hub cache layout as vLLM/SGLang (/root/.cache/huggingface/hub).
+      HF_HUB_CACHE: /data/hub
+    volumes:
+      - hf-cache:/data
+    ports:
+      - "127.0.0.1:8003:80"
+    command: >-
+      --model-id ${MODEL_ID:-Qwen/Qwen2.5-1.5B-Instruct}
+      --port 80
+      --dtype ${DTYPE:-float16}
+      --max-input-tokens ${MAX_INPUT_TOKENS:-3072}
+      --max-total-tokens ${MAX_MODEL_LEN:-4096}
+      --max-batch-prefill-tokens ${MAX_MODEL_LEN:-4096}
+      --cuda-memory-fraction ${TGI_CUDA_MEMORY_FRACTION:-0.90}
+      ${TGI_EXTRA_ARGS:-}
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/80 && printf 'GET /health HTTP/1.0\\r\\n\\r\\n' >&3 && head -n1 <&3 | grep -q ' 200 '"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15m
+    restart: unless-stopped
+
+  ollama:
+    <<: *gpu
+    profiles: [ollama, all]
+    image: ${OLLAMA_IMAGE:-ollama/ollama:latest}
+    environment:
+      OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL:-16}
+      OLLAMA_KEEP_ALIVE: "-1"
+      OLLAMA_MAX_QUEUE: "1024"
+    volumes:
+      - ollama-models:/root/.ollama
+    ports:
+      - "127.0.0.1:11434:11434"
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    restart: unless-stopped
+
+  # One-shot: pull the GGUF model into the ollama volume once the server is up.
+  ollama-pull:
+    profiles: [ollama, all]
+    image: ${OLLAMA_IMAGE:-ollama/ollama:latest}
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    command: ["pull", "${OLLAMA_MODEL:-qwen2.5:1.5b}"]
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: "no"
+
+volumes:
+  hf-cache:
+  ollama-models:
